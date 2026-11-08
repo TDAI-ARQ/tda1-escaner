@@ -1,0 +1,404 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TDA I — Escáner en vivo</title>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:#f3f6fa;
+  font-family:Arial,sans-serif;
+  color:#19324f;
+}
+header{
+  background:#19375a;
+  color:#fff;
+  text-align:center;
+  padding:20px 12px;
+}
+h1{font-size:21px;margin:0 0 6px}
+header p{
+  margin:0;
+  font-size:12px;
+  color:#c8d8eb;
+}
+main{
+  max-width:620px;
+  margin:16px auto;
+  padding:0 14px;
+}
+.card{
+  border:1px solid #dbe3ed;
+  border-radius:11px;
+  background:white;
+  padding:16px;
+  margin-bottom:14px;
+}
+.btn{
+  background:#19375a;
+  border:0;
+  color:white;
+  padding:12px 16px;
+  border-radius:8px;
+  font-size:14px;
+  font-weight:bold;
+  cursor:pointer;
+}
+.btn:disabled{opacity:.5}
+.secondary{
+  background:white;
+  color:#19375a;
+  border:1px solid #bfcddd;
+}
+#reader{width:100%;margin-top:12px}
+.notice{
+  background:#eaf2fa;
+  padding:13px;
+  border-radius:8px;
+  font-size:13px;
+  line-height:1.5;
+  margin:10px 0;
+}
+.notice.error{
+  background:#ffeded;
+  color:#9d2424;
+}
+.notice.ok{
+  background:#e9f7eb;
+  color:#1f743f;
+}
+.buttons{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.result{
+  border-bottom:1px solid #e0e7ef;
+  padding:11px 0;
+  font-size:13px;
+}
+.result:first-child{padding-top:0}
+.sub{
+  color:#66788c;
+  font-size:12px;
+  line-height:1.5;
+}
+#reader video{border-radius:9px}
+small{color:#687b8d}
+</style>
+</head>
+
+<body>
+<header>
+  <h1>TDA I — Escáner QR en vivo</h1>
+  <p>Registro docente de entregas · Cámara continua</p>
+</header>
+
+<main>
+<section class="card">
+  <div id="link" class="notice">
+    Conectando con el Registro QR…
+  </div>
+
+  <div class="buttons">
+    <button id="start" class="btn" disabled>
+      Activar cámara
+    </button>
+    <button id="stop" class="btn secondary" disabled>
+      Detener cámara
+    </button>
+  </div>
+
+  <div id="reader"></div>
+
+  <p class="sub">
+    Apuntá al QR de cada maqueta. El lector
+    permanecerá abierto y registrará automáticamente
+    cada nuevo código. Separá el QR de la cámara
+    después de leerlo.
+  </p>
+
+  <div id="state" class="notice">
+    Esperando conexión.
+  </div>
+</section>
+
+<section class="card">
+  <strong>
+    Registros de esta sesión:
+    <span id="count">0</span>
+  </strong>
+  <div id="history" style="margin-top:10px"></div>
+</section>
+</main>
+
+<script>
+'use strict';
+
+const $=id=>document.getElementById(id);
+
+let scanner=null;
+let started=false;
+let connected=false;
+let busy=false;
+let year='';
+let count=0;
+let lastCode='';
+let lastAt=0;
+let seq=0;
+
+const pending=new Map();
+
+function status(msg,kind=''){
+  const n=$('state');
+  n.textContent=msg;
+  n.className='notice'+(kind?' '+kind:'');
+}
+
+function parentSend(msg){
+  if(window.opener&&!window.opener.closed){
+    window.opener.postMessage(msg,'*');
+    return true;
+  }
+  return false;
+}
+
+function connect(){
+  if(!parentSend({type:'TDAI_SCANNER_READY'})){
+    $('link').textContent=
+      'Abrí este lector desde el botón del Registro QR docente. '+
+      'Si accediste directamente a esta página, '+
+      'cerrala y volvé al Registro QR.';
+    $('link').className='notice error';
+    return;
+  }
+
+  setTimeout(()=>{
+    if(!connected){
+      $('link').textContent=
+        'No se pudo establecer la comunicación. '+
+        'Cerrá esta ventana y abrila nuevamente '+
+        'desde el Registro QR.';
+      $('link').className='notice error';
+    }
+  },5000);
+}
+
+window.addEventListener('message',ev=>{
+  if(ev.source!==window.opener)return;
+
+  const m=ev.data||{};
+
+  if(m.type==='TDAI_SCANNER_CONFIG'){
+    if(!/^\d{4}$/.test(String(m.year||'')))return;
+
+    year=String(m.year);
+    connected=true;
+
+    $('link').textContent=
+      'Conectado al Registro QR · Año '+year;
+    $('link').className='notice ok';
+    $('start').disabled=false;
+    status('Listo para activar la cámara.');
+  }
+
+  if(m.type==='TDAI_SCANNER_ACK'){
+    if(!pending.has(m.requestId))return;
+
+    pending.delete(m.requestId);
+    busy=false;
+
+    if(m.ok){
+      count++;
+      $('count').textContent=String(count);
+
+      status(
+        m.duplicado
+          ?'Código ya registrado: '+m.nombre
+          :'Registrado: '+m.nombre,
+        m.duplicado?'':'ok'
+      );
+
+      addHistory(
+        m.nombre+' · '+
+        (m.duplicado?'Ya registrado':'Registrado ahora')+
+        ' · '+(m.fecha||'')
+      );
+
+    }else{
+      status(
+        'No se pudo registrar: '+
+        (m.error||'Error desconocido'),
+        'error'
+      );
+
+      addHistory(
+        'Error: '+(m.error||'Registro fallido')
+      );
+    }
+  }
+});
+
+function addHistory(t){
+  const el=document.createElement('div');
+  el.className='result';
+  el.textContent=t;
+
+  $('history').prepend(el);
+
+  while($('history').children.length>12){
+    $('history').lastChild.remove();
+  }
+}
+
+function decoded(content){
+  if(!connected||busy)return;
+
+  const code=String(content||'').trim();
+
+  if(!/^TDAI\|ID\|[A-Za-z0-9_-]{3,80}$/.test(code)){
+    return;
+  }
+
+  const now=Date.now();
+
+  if(code===lastCode&&now-lastAt<10000){
+    return;
+  }
+
+  lastCode=code;
+  lastAt=now;
+  busy=true;
+
+  status(
+    'Registrando '+
+    code.replace('TDAI|ID|','')+'…'
+  );
+
+  const requestId=String(++seq);
+  pending.set(requestId,code);
+
+  if(!parentSend({
+    type:'TDAI_SCANNER_SCAN',
+    requestId,
+    code,
+    year
+  })){
+    busy=false;
+    pending.delete(requestId);
+    status(
+      'Se perdió la comunicación con el Registro QR.',
+      'error'
+    );
+    return;
+  }
+
+  setTimeout(()=>{
+    if(pending.has(requestId)){
+      pending.delete(requestId);
+      busy=false;
+      status(
+        'El Registro QR no respondió. '+
+        'Revisá la conexión antes de seguir.',
+        'error'
+      );
+    }
+  },20000);
+}
+
+async function start(){
+  if(!connected||started)return;
+
+  if(typeof Html5Qrcode!=='function'){
+    status(
+      'No se cargó la biblioteca QR. Revisá Internet.',
+      'error'
+    );
+    return;
+  }
+
+  $('start').disabled=true;
+
+  try{
+    scanner=new Html5Qrcode('reader');
+
+    try{
+      await scanner.start(
+        {facingMode:'environment'},
+        {
+          fps:8,
+          qrbox:{width:230,height:230}
+        },
+        decoded,
+        ()=>{}
+      );
+    }catch(e){
+      const cameras=await Html5Qrcode.getCameras();
+
+      if(!cameras.length)throw e;
+
+      await scanner.start(
+        cameras[cameras.length-1].id,
+        {
+          fps:8,
+          qrbox:{width:230,height:230}
+        },
+        decoded,
+        ()=>{}
+      );
+    }
+
+    started=true;
+    $('stop').disabled=false;
+
+    status(
+      'Cámara activa. Apuntá al primer QR.'
+    );
+
+  }catch(e){
+    scanner=null;
+    $('start').disabled=false;
+
+    status(
+      'No se pudo activar la cámara: '+
+      (e.message||String(e)),
+      'error'
+    );
+  }
+}
+
+async function stop(){
+  if(!scanner||!started)return;
+
+  try{
+    await scanner.stop();
+    scanner.clear();
+  }catch(e){
+  }finally{
+    scanner=null;
+    started=false;
+    $('start').disabled=false;
+    $('stop').disabled=true;
+    status('Cámara detenida.');
+  }
+}
+
+$('start').onclick=start;
+$('stop').onclick=stop;
+
+window.addEventListener('load',connect);
+
+window.addEventListener('beforeunload',()=>{
+  if(started&&scanner){
+    scanner.stop().catch(()=>{});
+  }
+});
+</script>
+</body>
+</html>
