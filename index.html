@@ -198,7 +198,7 @@ function addHistory(t){
 function decoded(content){
   if(!connected||busy||visorAbierto)return;
   const code=String(content||'').trim();
-  if(!/^TDAI\|ID\|[A-Za-z0-9_-]{3,80}$/.test(code)){
+  if(!(/^TDAI\|ID\|[A-Za-z0-9_-]{3,80}$/.test(code) || /^TDAI\|V2\|[A-Za-z0-9_-]{2,40}\|[A-Za-z0-9_-]{3,80}\|[A-Za-z0-9_-]{3,80}$/.test(code))){
     abrirVisor('error',{error:'Este código no pertenece al sistema TDA I o tiene un formato incorrecto.'});
     return;
   }
