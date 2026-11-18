@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>TDA I — Escáner QR en vivo · V2.0</title>
+<title>TDA I — Escáner QR en vivo · V2.4</title>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <style>
 *{box-sizing:border-box}
@@ -79,6 +79,8 @@ small{color:#687b8d}
 const $=id=>document.getElementById(id);
 let scanner=null;
 let started=false;
+let starting=false;
+let autoStartIntent = new URLSearchParams(location.search).get('autostart') === '1';
 let connected=false;
 let busy=false;
 let year='';
@@ -166,7 +168,11 @@ window.addEventListener('message',ev=>{
     $('link').textContent='Conectado al Registro QR · Año '+year;
     $('link').className='notice ok';
     $('start').disabled=false;
-    status('Listo para activar la cámara.');
+    status(autoStartIntent ? 'Activando cámara automáticamente…' : 'Listo para activar la cámara.');
+    if (autoStartIntent) {
+      autoStartIntent = false;
+      start();
+    }
     return;
   }
   if(m.type==='TDAI_SCANNER_ACK'){
@@ -222,8 +228,10 @@ function decoded(content){
   },20000);
 }
 async function start(){
-  if(!connected||started)return;
+  if(!connected||started||starting)return;
+  starting=true;
   if(typeof Html5Qrcode!=='function'){
+    starting=false;
     status('No se cargó la biblioteca QR. Revisá Internet.','error');
     return;
   }
@@ -246,12 +254,15 @@ async function start(){
       );
     }
     started=true;
+    starting=false;
     $('stop').disabled=false;
     status('Cámara activa. Apuntá al primer QR.');
   }catch(e){
+    if (scanner) { try { scanner.clear(); } catch (_) {} }
     scanner=null;
+    starting=false;
     $('start').disabled=false;
-    status('No se pudo activar la cámara: '+(e.message||String(e)),'error');
+    status('El navegador no habilitó la cámara automáticamente. Presioná «Activar cámara» para continuar. Detalle: '+(e.message||String(e)),'error');
   }
 }
 async function stop(){
